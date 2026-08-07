@@ -1,49 +1,41 @@
-"""
-Tool Registry — this is the "plugin system" for the agent.
+"""Tool registry for the command-line agent.
 
-Each tool is registered here with metadata the Planner needs (name +
-description) and the actual async function that executes it. To add a
-new plugin (Jira, Notion, Slack, etc.), just add an entry to AVAILABLE_TOOLS
-below — nothing else in the pipeline needs to change.
+Raw Gmail/GitHub retrieval is also exposed by ``mcp_server.py``.  The CLI uses
+these bounded source agents so it can adapt its search strategy without an
+unbounded multi-agent loop.
 """
 
-from tools.gmail_tool import search_emails
-from tools.github_tool import search_github, explore_codebase
+from agents import run_github_agent, run_gmail_agent
 
-# Each entry: name -> {label (shown to user), description (for the planner),
-#                       fn (the actual tool), requires (session config keys needed)}
+
+async def _gmail_agent_tool(sub_question: str, **args) -> list[str]:
+    return await run_gmail_agent(sub_question, args)
+
+
+async def _github_agent_tool(sub_question: str, **args) -> list[str]:
+    return await run_github_agent(sub_question, args)
+
+
 AVAILABLE_TOOLS = {
-    "search_emails": {
+    "gmail_agent": {
         "label": "Gmail",
         "description": (
-            "search_emails(query: str, hours_back: int | None) -> searches Gmail. "
-            "Set hours_back based on the time window implied by the user's question "
-            "(e.g. 'past 3 hours' -> 3, '2 days' -> 48). Omit/null if no time element."
+            "gmail_agent(query: str, hours_back: int | None) -> read-only Gmail agent. "
+            "It chooses up to two search queries, observes results, and retries only "
+            "when the first search is thin. Set hours_back from any user time window."
         ),
-        "fn": search_emails,
-        "requires": [],  # uses OAuth token, no extra session config needed
+        "fn": _gmail_agent_tool,
+        "requires": [],
     },
-    "search_github": {
-        "label": "GitHub (recent activity)",
+    "github_agent": {
+        "label": "GitHub",
         "description": (
-            "search_github(query: str, repo: str | None, hours_back: int | None) -> "
-            "returns recent commits and issues/PRs. Use this for 'what happened' / "
-            "'what changed' style questions. Set hours_back the same way as search_emails."
+            "github_agent(query: str, repo: str | None, hours_back: int | None) -> "
+            "read-only GitHub agent. It decides whether recent activity, semantic "
+            "codebase retrieval, or both are needed; after thin single-mode evidence, "
+            "it tries the complementary mode once."
         ),
-        "fn": search_github,
-        "requires": ["repo"],
-    },
-    "explore_codebase": {
-        "label": "GitHub (codebase understanding)",
-        "description": (
-            "explore_codebase(query: str, repo: str | None) -> smart RAG retrieval "
-            "for any question about the codebase. Pass the user's question/sub-question "
-            "as 'query' — the tool uses an LLM to pick the most relevant files from the "
-            "repo and fetches their contents. Works for 'explain this project', "
-            "'how does auth work', 'what technologies are used', 'how do I run this', etc. "
-            "NOT for time-based activity questions — use search_github for those."
-        ),
-        "fn": explore_codebase,
+        "fn": _github_agent_tool,
         "requires": ["repo"],
     },
 }

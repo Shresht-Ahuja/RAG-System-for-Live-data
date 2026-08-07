@@ -45,7 +45,7 @@ async def run_tool(step: dict, active_tools: dict) -> dict:
         }
 
     try:
-        results = await tool_info["fn"](**args)
+        results = await tool_info["fn"](sub_question=step["sub_question"], **args)
     except Exception as e:
         results = []
         print(f"[warn] tool '{tool_name}' failed: {e}")
@@ -138,14 +138,14 @@ def setup_session(active_tools: dict) -> dict:
 
     config = {}
 
-    if "search_github" in active_tools or "explore_codebase" in active_tools:
+    if "github_agent" in active_tools:
         repo_input = input("GitHub repo (e.g. yourusername/project-x or full URL): ").strip()
         repo = _normalize_repo(repo_input)
         os.environ["DEFAULT_GITHUB_REPO"] = repo
         config["repo"] = repo
         print(f"✓ GitHub repo set to: {repo}")
 
-    if "search_emails" in active_tools:
+    if "gmail_agent" in active_tools:
         print("✓ Gmail: already connected (OAuth complete)")
 
     print()
