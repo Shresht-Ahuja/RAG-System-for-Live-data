@@ -39,7 +39,13 @@ def _has_useful_results(results: list[str]) -> bool:
     if not results:
         return False
     text = "\n".join(results).lower()
-    return "no emails found" not in text and "[error]" not in text and "could not fetch" not in text
+    return (
+        "no emails found" not in text
+        and "no notion pages found" not in text
+        and "no obsidian notes found" not in text
+        and "[error]" not in text
+        and "could not fetch" not in text
+    )
 
 
 def _gmail_queries(sub_question: str, initial_query: str) -> list[str]:
@@ -123,3 +129,43 @@ async def run_github_agent(sub_question: str, args: dict[str, Any]) -> list[str]
         else:
             results.extend(await search_github(query, repo=repo, hours_back=hours_back))
     return results
+
+
+def _document_queries(source: str, sub_question: str, initial_query: str) -> list[str]:
+    decision = _json_response(
+        f"""You are a read-only {source} retrieval agent. Turn this sub-question into
+at most two concise search queries. Start broad and make the second query more
+specific only if the first produces no useful evidence. Return
+{{\"queries\": [\"...\"]}}.
+
+Sub-question: {sub_question}
+Initial query: {initial_query}""",
+        {"queries": [initial_query]},
+    )
+    queries = decision.get("queries", [initial_query])
+    if not isinstance(queries, list):
+        queries = [initial_query]
+    cleaned = [item.strip() for item in queries if isinstance(item, str) and item.strip()]
+    return (cleaned or [initial_query])[:2]
+
+
+async def _run_document_agent(source: str, sub_question: str, args: dict[str, Any], search_fn) -> list[str]:
+    query = str(args.get("query", sub_question))
+    all_results: list[str] = []
+    for attempt, candidate in enumerate(_document_queries(source, sub_question, query), start=1):
+        print(f"      [{source.lower()} agent] search {attempt}/2: {candidate!r}")
+        results = await search_fn(candidate)
+        all_results.extend(results)
+        if _has_useful_results(results):
+            break
+    return all_results
+
+
+async def run_notion_agent(sub_question: str, args: dict[str, Any]) -> list[str]:
+    from tools.notion_tool import search_notion
+    return await _run_document_agent("Notion", sub_question, args, search_notion)
+
+
+async def run_obsidian_agent(sub_question: str, args: dict[str, Any]) -> list[str]:
+    from tools.obsidian_tool import search_obsidian
+    return await _run_document_agent("Obsidian", sub_question, args, search_obsidian)

@@ -148,6 +148,15 @@ def setup_session(active_tools: dict) -> dict:
     if "gmail_agent" in active_tools:
         print("✓ Gmail: already connected (OAuth complete)")
 
+    if "notion_agent" in active_tools:
+        status = "configured" if os.environ.get("NOTION_TOKEN") else "NOTION_TOKEN is missing"
+        print(f"Notion: {status}")
+
+    if "obsidian_agent" in active_tools:
+        vault = os.environ.get("OBSIDIAN_VAULT_PATH")
+        status = vault if vault and os.path.isdir(vault) else "OBSIDIAN_VAULT_PATH is missing or invalid"
+        print(f"Obsidian: {status}")
+
     print()
     return config
 
