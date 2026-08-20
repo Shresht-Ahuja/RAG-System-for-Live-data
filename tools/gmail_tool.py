@@ -21,7 +21,12 @@ from googleapiclient.discovery import build
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
-def _get_gmail_service():
+def _get_gmail_service(access_token: str | None = None):
+    """Build a Gmail service from a user OAuth token or the legacy local token."""
+    if access_token:
+        creds = Credentials(token=access_token, scopes=SCOPES)
+        return build("gmail", "v1", credentials=creds)
+
     creds = None
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
@@ -58,7 +63,9 @@ def _extract_body(payload) -> str:
     return ""
 
 
-async def search_emails(query: str, hours_back: int | None = None) -> list[str]:
+async def search_emails(
+    query: str, hours_back: int | None = None, access_token: str | None = None
+) -> list[str]:
     """
     Searches Gmail using the given query, optionally restricted to the last
     `hours_back` hours. If hours_back is None, searches without a time filter
@@ -70,7 +77,7 @@ async def search_emails(query: str, hours_back: int | None = None) -> list[str]:
 
     Returns a list of short summaries: "From: X | Subject: Y | Snippet: Z"
     """
-    service = _get_gmail_service()
+    service = _get_gmail_service(access_token=access_token)
 
     gmail_query = query
     cutoff_ms = None

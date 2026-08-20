@@ -77,7 +77,9 @@ async def run_gmail_agent(sub_question: str, args: dict[str, Any]) -> list[str]:
     all_results: list[str] = []
     for attempt, candidate in enumerate(_gmail_queries(sub_question, query), start=1):
         print(f"      [gmail agent] search {attempt}/{MAX_GMAIL_SEARCHES}: {candidate!r}")
-        results = await search_emails(candidate, hours_back=hours_back)
+        results = await search_emails(
+            candidate, hours_back=hours_back, access_token=args.get("access_token")
+        )
         all_results.extend(results)
         if _has_useful_results(results):
             break
@@ -115,9 +117,11 @@ async def run_github_agent(sub_question: str, args: dict[str, Any]) -> list[str]
     print(f"      [github agent] initial strategy: {', '.join(actions)}")
     calls = []
     if "activity" in actions:
-        calls.append(search_github(query, repo=repo, hours_back=hours_back))
+        calls.append(
+            search_github(query, repo=repo, hours_back=hours_back, access_token=args.get("access_token"))
+        )
     if "codebase" in actions:
-        calls.append(explore_codebase(query, repo=repo))
+        calls.append(explore_codebase(query, repo=repo, access_token=args.get("access_token")))
     batches = await asyncio.gather(*calls)
     results = [item for batch in batches for item in batch]
 
@@ -125,9 +129,11 @@ async def run_github_agent(sub_question: str, args: dict[str, Any]) -> list[str]
         follow_up = "codebase" if actions[0] == "activity" else "activity"
         print(f"      [github agent] evidence was thin; follow-up strategy: {follow_up}")
         if follow_up == "codebase":
-            results.extend(await explore_codebase(query, repo=repo))
+            results.extend(await explore_codebase(query, repo=repo, access_token=args.get("access_token")))
         else:
-            results.extend(await search_github(query, repo=repo, hours_back=hours_back))
+            results.extend(
+                await search_github(query, repo=repo, hours_back=hours_back, access_token=args.get("access_token"))
+            )
     return results
 
 
@@ -163,7 +169,9 @@ async def _run_document_agent(source: str, sub_question: str, args: dict[str, An
 
 async def run_notion_agent(sub_question: str, args: dict[str, Any]) -> list[str]:
     from tools.notion_tool import search_notion
-    return await _run_document_agent("Notion", sub_question, args, search_notion)
+    async def search(query: str) -> list[str]:
+        return await search_notion(query, access_token=args.get("access_token"))
+    return await _run_document_agent("Notion", sub_question, args, search)
 
 
 async def run_obsidian_agent(sub_question: str, args: dict[str, Any]) -> list[str]:

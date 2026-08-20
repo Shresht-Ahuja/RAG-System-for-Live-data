@@ -11,8 +11,8 @@ MAX_RESULTS = 8
 MAX_BLOCKS_PER_PAGE = 20
 
 
-def _headers() -> dict[str, str]:
-    token = os.environ.get("NOTION_TOKEN")
+def _headers(access_token: str | None = None) -> dict[str, str]:
+    token = access_token or os.environ.get("NOTION_TOKEN")
     return {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION, "Content-Type": "application/json"}
 
 
@@ -37,11 +37,11 @@ def _block_text(block: dict[str, Any]) -> str:
     return _plain_text(payload.get("rich_text", [])) if isinstance(payload, dict) else ""
 
 
-async def search_notion(query: str) -> list[str]:
+async def search_notion(query: str, access_token: str | None = None) -> list[str]:
     """Search accessible Notion pages and return short, read-only excerpts."""
-    if not os.environ.get("NOTION_TOKEN"):
+    if not access_token and not os.environ.get("NOTION_TOKEN"):
         return ["[error] NOTION_TOKEN is not configured."]
-    async with httpx.AsyncClient(headers=_headers(), timeout=12) as client:
+    async with httpx.AsyncClient(headers=_headers(access_token), timeout=12) as client:
         response = await client.post(f"{NOTION_API}/search", json={"query": query, "page_size": MAX_RESULTS})
         if response.status_code == 401:
             return ["[error] Notion token is invalid or unauthorized."]

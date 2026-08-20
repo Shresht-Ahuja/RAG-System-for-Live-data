@@ -57,8 +57,8 @@ def _get_repo(repo: str | None) -> str | None:
     return repo or os.environ.get("DEFAULT_GITHUB_REPO")
 
 
-def _get_headers() -> dict:
-    token = os.environ.get("GITHUB_TOKEN")
+def _get_headers(access_token: str | None = None) -> dict:
+    token = access_token or os.environ.get("GITHUB_TOKEN")
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -267,7 +267,12 @@ async def _fetch_file_contents(
 #  Public tool: search_github (unchanged — handles time-based queries)
 # ──────────────────────────────────────────────────────────────────────
 
-async def search_github(query: str, repo: str | None = None, hours_back: int | None = None) -> list[str]:
+async def search_github(
+    query: str,
+    repo: str | None = None,
+    hours_back: int | None = None,
+    access_token: str | None = None,
+) -> list[str]:
     """
     Fetches recent commits and issues/PRs for the repo. `hours_back` optionally
     restricts commits to that window (e.g. 3 for "past 3 hours", 48 for "2 days").
@@ -281,7 +286,7 @@ async def search_github(query: str, repo: str | None = None, hours_back: int | N
     if not repo:
         return ["[error] No GitHub repo configured for this session."]
 
-    headers = _get_headers()
+    headers = _get_headers(access_token)
     summaries = []
 
     commit_params = {"per_page": 20}
@@ -326,7 +331,9 @@ async def search_github(query: str, repo: str | None = None, hours_back: int | N
 #  Public tool: explore_codebase (UPGRADED — smart RAG retrieval)
 # ──────────────────────────────────────────────────────────────────────
 
-async def explore_codebase(query: str, repo: str | None = None) -> list[str]:
+async def explore_codebase(
+    query: str, repo: str | None = None, access_token: str | None = None
+) -> list[str]:
     """
     Smart RAG retrieval for codebase understanding questions.
 
@@ -346,7 +353,7 @@ async def explore_codebase(query: str, repo: str | None = None) -> list[str]:
     if not repo:
         return ["[error] No GitHub repo configured for this session."]
 
-    headers = _get_headers()
+    headers = _get_headers(access_token)
     summaries = []
 
     async with httpx.AsyncClient(headers=headers, timeout=15) as client:
@@ -357,7 +364,7 @@ async def explore_codebase(query: str, repo: str | None = None) -> list[str]:
         if file_paths is None or len(file_paths) == 0:
             # Fallback: if tree fetch fails, do the old behavior
             print("      [explore] Tree fetch failed, falling back to README + top-level listing")
-            return await _fallback_explore(repo, client)
+            return await _fallback_explore(repo, client, access_token=access_token)
 
         print(f"      [explore] Found {len(file_paths)} files in repo")
 
@@ -407,9 +414,11 @@ def _build_tree_summary(file_paths: list[str]) -> str:
     return "\n".join(lines)
 
 
-async def _fallback_explore(repo: str, client: httpx.AsyncClient) -> list[str]:
+async def _fallback_explore(
+    repo: str, client: httpx.AsyncClient, access_token: str | None = None
+) -> list[str]:
     """Original explore_codebase behavior — used as fallback if tree API fails."""
-    headers = _get_headers()
+    headers = _get_headers(access_token)
     summaries = []
 
     # README content
