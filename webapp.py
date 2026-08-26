@@ -5,16 +5,20 @@ import base64
 import os
 import secrets
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from dotenv import load_dotenv
 
-from auth_store import connection_status, get_access_token, initialize_store, save_connection, upsert_user
+from auth_store import connection_status, get_access_token, get_user, initialize_store, save_connection, upsert_user
 from agents import run_github_agent, run_gmail_agent, run_notion_agent
 from aggregator import aggregate_evidence, synthesize_answer
 from planner import create_plan
@@ -25,6 +29,8 @@ from tools.notion_tool import search_notion
 load_dotenv()
 
 app = FastAPI(title="Live Data Agent")
+PROJECT_ROOT = Path(__file__).resolve().parent
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
 
 def _required(name: str) -> str:
@@ -67,6 +73,13 @@ def _current_user(request: Request) -> str:
 def startup() -> None:
     _required("SESSION_SECRET")
     _required("TOKEN_ENCRYPTION_KEY")
+    if os.getenv("APP_ENV", "development") == "production":
+        if not _base_url().startswith("https://"):
+            raise RuntimeError("APP_BASE_URL must use https:// when APP_ENV=production.")
+        if not os.getenv("ALLOWED_HOSTS"):
+            raise RuntimeError("ALLOWED_HOSTS must list the production domain when APP_ENV=production.")
+        if not (FRONTEND_DIST / "index.html").is_file():
+            raise RuntimeError("Production frontend is missing. Run the Vite build before starting the app.")
     initialize_store()
 
 
@@ -76,21 +89,22 @@ app.add_middleware(
     https_only=os.getenv("APP_ENV", "development") == "production",
     same_site="lax",
 )
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(","),
+)
+if os.getenv("APP_ENV", "development") == "production":
+    app.add_middleware(HTTPSRedirectMiddleware)
+
+app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False), name="assets")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def home(request: Request):
-    user_id = request.session.get("user_id")
-    if not user_id:
-        return "<h1>Live Data Agent</h1><p><a href='/auth/login'>Sign in with Google and connect Gmail</a></p>"
-    statuses = connection_status(user_id)
-    rows = "".join(f"<li>{provider.title()}: {'connected' if is_connected else 'not connected'}</li>" for provider, is_connected in statuses.items())
-    return (
-        "<h1>Live Data Agent</h1><p>Signed in.</p>"
-        f"<ul>{rows}</ul>"
-        "<p><a href='/connect/github'>Connect GitHub</a> | <a href='/connect/notion'>Connect Notion</a> | <a href='/auth/logout'>Log out</a></p>"
-        "<p>Obsidian is a local-vault source and is configured separately on the machine running the agent.</p>"
-    )
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    return "<h1>Live Data Agent API</h1><p>Start the React dashboard with <code>npm run dev</code> inside frontend.</p>"
 
 
 @app.get("/auth/login")
@@ -181,6 +195,15 @@ async def notion_callback(request: Request, code: str | None = None, state: str 
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/api/me")
+async def current_user(request: Request):
+    user_id = _current_user(request)
+    user = get_user(user_id)
+    if not user:
+        raise HTTPException(401, "Your session is no longer valid. Sign in again.")
+    return {"user": user, "connections": connection_status(user_id)}
 
 
 class SearchRequest(BaseModel):

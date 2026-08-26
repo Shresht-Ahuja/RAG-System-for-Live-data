@@ -17,3 +17,5 @@ Thumbs.db
 token.json
 credentials.json
 data/
+frontend/node_modules/
+frontend/dist/

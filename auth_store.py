@@ -14,8 +14,11 @@ from typing import Any
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
+from dotenv import load_dotenv
 
+load_dotenv()
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "data/live_data_agent.db"))
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
 def _fernet() -> Fernet:
@@ -31,18 +34,7 @@ def _fernet() -> Fernet:
 def initialize_store() -> None:
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT, created_at INTEGER NOT NULL
-            )"""
-        )
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS connections (
-                user_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_credentials BLOB NOT NULL,
-                expires_at INTEGER, metadata TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL,
-                PRIMARY KEY (user_id, provider), FOREIGN KEY (user_id) REFERENCES users(id)
-            )"""
-        )
+        connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def upsert_user(user_id: str, email: str, name: str | None) -> None:
@@ -52,6 +44,15 @@ def upsert_user(user_id: str, email: str, name: str | None) -> None:
             ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name""",
             (user_id, email, name, int(time.time())),
         )
+
+
+def get_user(user_id: str) -> dict[str, str | None] | None:
+    """Return non-sensitive user details for the signed-in user's dashboard."""
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        row = connection.execute(
+            "SELECT email, name FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    return {"email": row[0], "name": row[1]} if row else None
 
 
 def save_connection(user_id: str, provider: str, credentials: dict[str, Any], metadata: dict[str, Any] | None = None) -> None:
