@@ -17,7 +17,7 @@ load_dotenv()
 
 client = Groq(api_key=os.environ.get("API_KEY"))
 
-PLANNER_MODEL = "llama-3.3-70b-versatile"  # fast, good at structured JSON output
+PLANNER_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 def create_plan(user_question: str, enabled_tools: dict, memory: list[str] | None = None) -> list[dict]:

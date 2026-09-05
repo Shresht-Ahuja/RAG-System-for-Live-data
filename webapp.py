@@ -1,4 +1,4 @@
-"""FastAPI product surface: Google sign-in plus user-owned source connections."""
+"""FastAPI product surface: GitHub/Google sign-in plus user-owned connections."""
 
 import asyncio
 import base64
@@ -40,6 +40,15 @@ def _required(name: str) -> str:
     return value
 
 
+def _oauth_credential(name: str) -> str:
+    """Reject copied example values before they produce opaque provider errors."""
+    value = _required(name)
+    normalized = value.strip().lower()
+    if normalized.startswith(("your_", "your-", "replace_with_", "replace-with-")):
+        raise HTTPException(503, f"{name} is still a placeholder. Add the real value from your OAuth app to .env.")
+    return value
+
+
 def _base_url() -> str:
     return _required("APP_BASE_URL").rstrip("/")
 
@@ -65,8 +74,14 @@ def _check_state(request: Request, provider: str, state: str | None) -> None:
 def _current_user(request: Request) -> str:
     user_id = request.session.get("user_id")
     if not user_id:
-        raise HTTPException(401, "Sign in with Google before connecting sources.")
+        if request.session.get("guest"):
+            raise HTTPException(403, "Guest mode is limited to public GitHub repository questions.")
+        raise HTTPException(401, "Sign in before connecting sources.")
     return user_id
+
+
+def _is_guest(request: Request) -> bool:
+    return bool(request.session.get("guest")) and not bool(request.session.get("user_id"))
 
 
 @app.on_event("startup")
@@ -109,6 +124,8 @@ async def home(request: Request):
 
 @app.get("/auth/login")
 async def login(request: Request):
+    if _is_guest(request):
+        raise HTTPException(403, "Guest mode cannot connect Gmail. Sign in with GitHub first.")
     state = _state(request, "google")
     params = {
         "client_id": _required("GOOGLE_CLIENT_ID"), "redirect_uri": _redirect_uri("google"),
@@ -118,15 +135,38 @@ async def login(request: Request):
     return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
 
 
+@app.get("/auth/guest")
+async def guest_login(request: Request):
+    """Start an anonymous, public-repository-only session."""
+    request.session.clear()
+    request.session["guest"] = True
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/auth/login/github")
+async def login_github(request: Request):
+    """Start GitHub OAuth as the primary sign-in path.
+
+    The same callback is also used when an already signed-in user links GitHub.
+    """
+    params = {
+        "client_id": _oauth_credential("GITHUB_CLIENT_ID"), "redirect_uri": _redirect_uri("github"),
+        # Login only needs profile and email read access. Public repository
+        # metadata remains available through GitHub's public API without a
+        # repository permission; private/org access is not requested.
+        "scope": os.getenv("GITHUB_OAUTH_SCOPE", "read:user user:email"),
+        "state": _state(request, "github"),
+    }
+    return RedirectResponse("https://github.com/login/oauth/authorize?" + urlencode(params))
+
+
 @app.get("/connect/github")
 async def connect_github(request: Request):
     _current_user(request)
     params = {
-        "client_id": _required("GITHUB_CLIENT_ID"), "redirect_uri": _redirect_uri("github"),
-        # OAuth Apps cannot grant read-only access to private repositories. Keep
-        # the default limited to public repositories; use a GitHub App with
-        # read-only Contents/Issues metadata permissions for private repos.
-        "scope": os.getenv("GITHUB_OAUTH_SCOPE", "read:user public_repo"), "state": _state(request, "github"),
+        "client_id": _oauth_credential("GITHUB_CLIENT_ID"), "redirect_uri": _redirect_uri("github"),
+        # Keep linking least-privilege: no repository or organization scope.
+        "scope": os.getenv("GITHUB_OAUTH_SCOPE", "read:user user:email"), "state": _state(request, "github"),
     }
     return RedirectResponse("https://github.com/login/oauth/authorize?" + urlencode(params))
 
@@ -151,8 +191,12 @@ async def google_callback(request: Request, code: str | None = None, state: str 
         userinfo = await client.get("https://openidconnect.googleapis.com/v1/userinfo", headers={"Authorization": f"Bearer {token['access_token']}"})
         userinfo.raise_for_status()
     profile = userinfo.json()
-    user_id = f"google:{profile['sub']}"
-    upsert_user(user_id, profile["email"], profile.get("name"))
+    # If the user is already signed in with GitHub, this is an account-linking
+    # action. Otherwise Google creates the initial application identity.
+    user_id = request.session.get("user_id") or f"google:{profile['sub']}"
+    if not get_user(user_id):
+        upsert_user(user_id, profile["email"], profile.get("name"))
+    request.session.pop("guest", None)
     request.session["user_id"] = user_id
     save_connection(user_id, "gmail", {"access_token": token["access_token"], "refresh_token": token.get("refresh_token"), "expires_at": int(time.time()) + int(token.get("expires_in", 3600))}, {"email": profile["email"]})
     return RedirectResponse("/", status_code=303)
@@ -160,17 +204,36 @@ async def google_callback(request: Request, code: str | None = None, state: str 
 
 @app.get("/auth/callback/github")
 async def github_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
-    user_id = _current_user(request)
     if error or not code:
         raise HTTPException(400, f"GitHub authorization was not completed: {error or 'missing code'}")
     _check_state(request, "github", state)
-    payload = {"client_id": _required("GITHUB_CLIENT_ID"), "client_secret": _required("GITHUB_CLIENT_SECRET"), "code": code, "redirect_uri": _redirect_uri("github")}
+    payload = {"client_id": _oauth_credential("GITHUB_CLIENT_ID"), "client_secret": _oauth_credential("GITHUB_CLIENT_SECRET"), "code": code, "redirect_uri": _redirect_uri("github")}
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post("https://github.com/login/oauth/access_token", data=payload, headers={"Accept": "application/json"})
         response.raise_for_status()
     token = response.json()
     if "access_token" not in token:
         raise HTTPException(400, "GitHub did not return an access token.")
+    github_headers = {"Authorization": f"Bearer {token['access_token']}", "Accept": "application/vnd.github+json"}
+    async with httpx.AsyncClient(timeout=12) as client:
+        profile_response = await client.get("https://api.github.com/user", headers=github_headers)
+        profile_response.raise_for_status()
+        profile = profile_response.json()
+        if not profile.get("email"):
+            email_response = await client.get("https://api.github.com/user/emails", headers=github_headers)
+            if email_response.is_success:
+                emails = email_response.json()
+                preferred = next((item.get("email") for item in emails if item.get("primary") and item.get("verified")), None)
+                profile["email"] = preferred
+    email = profile.get("email") or f"github-{profile['id']}@users.noreply.github.com"
+
+    # First-time GitHub sign-in creates the user. When a Google user clicks
+    # “Connect GitHub”, retain the existing identity and only add the source.
+    user_id = request.session.get("user_id") or f"github:{profile['id']}"
+    if not get_user(user_id):
+        upsert_user(user_id, email, profile.get("name") or profile.get("login"))
+    request.session.pop("guest", None)
+    request.session["user_id"] = user_id
     save_connection(user_id, "github", {"access_token": token["access_token"], "expires_at": None}, {"scope": token.get("scope", "")})
     return RedirectResponse("/", status_code=303)
 
@@ -199,6 +262,12 @@ async def logout(request: Request):
 
 @app.get("/api/me")
 async def current_user(request: Request):
+    if _is_guest(request):
+        return {
+            "guest": True,
+            "user": {"email": "", "name": "Guest"},
+            "connections": {"gmail": False, "github": False, "notion": False},
+        }
     user_id = _current_user(request)
     user = get_user(user_id)
     if not user:
@@ -215,11 +284,16 @@ class SearchRequest(BaseModel):
 
 @app.post("/api/search")
 async def search(request: Request, body: SearchRequest):
-    user_id = _current_user(request)
     if body.provider not in {"gmail", "github", "notion"}:
         raise HTTPException(400, "Unsupported provider.")
-    token = await get_access_token(user_id, body.provider)
-    if not token:
+    guest = _is_guest(request)
+    if guest and body.provider != "github":
+        raise HTTPException(403, "Guest mode only supports public GitHub repositories.")
+    if guest and not body.repo:
+        raise HTTPException(400, "Enter a public GitHub repository URL in guest mode.")
+    user_id = None if guest else _current_user(request)
+    token = "" if guest else await get_access_token(user_id, body.provider)
+    if not guest and not token:
         raise HTTPException(409, f"Connect {body.provider.title()} before searching.")
     if body.provider == "gmail":
         results = await search_emails(body.query, body.hours_back, access_token=token)
@@ -238,21 +312,29 @@ class AskRequest(BaseModel):
 @app.post("/api/ask")
 async def ask(request: Request, body: AskRequest):
     """Run the existing bounded agentic pipeline with only this user's sources."""
-    user_id = _current_user(request)
-    statuses = connection_status(user_id)
-    active_tools = {}
-    if statuses["gmail"]:
-        active_tools["gmail_agent"] = {
-            "description": "gmail_agent(query: str, hours_back: int | None) -> searches the signed-in user's Gmail read-only.",
+    guest = _is_guest(request)
+    user_id = None if guest else _current_user(request)
+    if guest:
+        active_tools = {
+            "github_agent": {
+                "description": "github_agent(query: str, repo: str | None, hours_back: int | None) -> reads public GitHub repository activity and code without using a user account.",
+            }
         }
-    if statuses["github"]:
-        active_tools["github_agent"] = {
-            "description": "github_agent(query: str, repo: str | None, hours_back: int | None) -> searches the signed-in user's authorized GitHub repositories read-only.",
-        }
-    if statuses["notion"]:
-        active_tools["notion_agent"] = {
-            "description": "notion_agent(query: str) -> searches Notion pages the signed-in user authorized, read-only.",
-        }
+    else:
+        statuses = connection_status(user_id)
+        active_tools = {}
+        if statuses["gmail"]:
+            active_tools["gmail_agent"] = {
+                "description": "gmail_agent(query: str, hours_back: int | None) -> searches the signed-in user's Gmail read-only.",
+            }
+        if statuses["github"]:
+            active_tools["github_agent"] = {
+                "description": "github_agent(query: str, repo: str | None, hours_back: int | None) -> searches the signed-in user's authorized GitHub repositories read-only.",
+            }
+        if statuses["notion"]:
+            active_tools["notion_agent"] = {
+                "description": "notion_agent(query: str) -> searches Notion pages the signed-in user authorized, read-only.",
+            }
     if not active_tools:
         raise HTTPException(409, "Connect at least one source before asking a question.")
 
@@ -262,8 +344,8 @@ async def ask(request: Request, body: AskRequest):
         args = dict(step.get("args", {}))
         tool = step["tool"]
         provider = {"gmail_agent": "gmail", "github_agent": "github", "notion_agent": "notion"}[tool]
-        token = await get_access_token(user_id, provider)
-        if not token:
+        token = "" if guest else await get_access_token(user_id, provider)
+        if not guest and not token:
             return {"sub_question": step["sub_question"], "source": provider.title(), "results": [f"[error] {provider.title()} needs to be reconnected."]}
         args["access_token"] = token
         if tool == "github_agent":

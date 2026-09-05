@@ -6,8 +6,10 @@ import os
 from typing import Any
 
 from groq import Groq
+from dotenv import load_dotenv
 
-AGENT_MODEL = "llama-3.3-70b-versatile"
+load_dotenv()
+AGENT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 MAX_GMAIL_SEARCHES = 2
 MAX_GITHUB_CALLS = 3
 

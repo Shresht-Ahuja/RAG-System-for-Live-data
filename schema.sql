@@ -1,5 +1,5 @@
 -- Small, deliberately simple SQLite schema for the resume-project deployment.
--- User identity is saved after Google sign-in. Provider credentials are encrypted
+-- User identity is saved after GitHub or Google sign-in. Provider credentials are encrypted
 -- before they are stored in connections.encrypted_credentials.
 
 PRAGMA foreign_keys = ON;

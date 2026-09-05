@@ -12,7 +12,7 @@ client = Groq(
     api_key=os.getenv("API_KEY")
 )
 
-FINAL_MODEL = "llama-3.3-70b-versatile"
+FINAL_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 def aggregate_evidence(tool_outputs: list[dict]) -> list[dict]:

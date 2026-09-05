@@ -17,6 +17,7 @@ import os
 import json
 import base64
 import httpx
+from urllib.parse import urlparse
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -44,21 +45,41 @@ _SKIP_DIRS = {
     "coverage", ".nyc_output",
 }
 
-FILE_SELECTOR_MODEL = "llama-3.3-70b-versatile"
+FILE_SELECTOR_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Max chars to fetch per file (keeps total evidence within LLM context limits)
-MAX_FILE_CHARS = 3000
+MAX_FILE_CHARS = 2000
 
 # Max files to select
-MAX_FILES = 10
+MAX_FILES = 6
+
+
+def _normalize_repo(repo: str | None) -> str | None:
+    """Accept ``owner/repo`` and full GitHub URLs at every entry point."""
+    if not repo:
+        return None
+    value = repo.strip().rstrip("/")
+    if value.startswith(("http://", "https://")):
+        parsed = urlparse(value)
+        if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
+            return None
+        value = parsed.path.strip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return "/".join(parts[:2])
 
 
 def _get_repo(repo: str | None) -> str | None:
-    return repo or os.environ.get("DEFAULT_GITHUB_REPO")
+    return _normalize_repo(repo or os.environ.get("DEFAULT_GITHUB_REPO"))
 
 
 def _get_headers(access_token: str | None = None) -> dict:
-    token = access_token or os.environ.get("GITHUB_TOKEN")
+    # ``None`` means use the legacy CLI token fallback. An explicit empty
+    # string is used by guest mode to guarantee an unauthenticated request.
+    token = os.environ.get("GITHUB_TOKEN") if access_token is None else access_token
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
