@@ -26,7 +26,7 @@ Response
 ```
 
 1. **Planner** — an LLM reads the raw question, infers intent and any time window ("past 3 hours" → a precise lookback), and decides which tool(s) are relevant. It never sees or can call a tool the user hasn't connected.
-2. **Tools / Agents** — each connected source (GitHub, Gmail, Notion, Obsidian) is a self-contained, read-only agent. GitHub combines recent-activity search with semantic code retrieval (embeddings + vector similarity) so questions like *"how does auth work here?"* find the right files by meaning, not keyword matching.
+2. **Tools / Agents** — each connected source (GitHub, Gmail, Notion, Obsidian) is a self-contained, read-only agent. For codebase questions, GitHub fetches the repository tree, uses an LLM to select the most relevant files, and retrieves their contents. This is live, LLM-guided retrieval; there is no persistent embedding index or vector database.
 3. **Evidence Aggregator** — flattens and numbers every result across all sources into a single evidence list, so the final answer can cite exactly where each claim came from.
 4. **Final LLM** — synthesizes a natural-language answer grounded only in the retrieved evidence, with inline citations (`[1]`, `[2]`, ...).
 
@@ -53,12 +53,12 @@ Backend (FastAPI)
    ├── aggregator.py     — evidence merging + final synthesis
    └── tools/
         ├── gmail_tool.py       — Gmail search (OAuth)
-        ├── github_tool.py      — commits, issues/PRs, semantic code search
+        ├── github_tool.py      — commits, issues/PRs, LLM-guided codebase retrieval
         ├── notion_tool.py      — Notion page search (OAuth)
         └── obsidian_tool.py    — local Markdown vault search (no OAuth — local-first)
 ```
 
-**Why Obsidian has no OAuth:** Obsidian is a local-first Markdown vault with no cloud API — the vault file path *is* the connection, not a login.
+**Why Obsidian has no OAuth:** Obsidian is a local-first Markdown vault with no cloud API — the vault file path *is* the connection, not a login. Obsidian is available through the local/CLI workflow, not as a web OAuth connection.
 
 ## Tech stack
 
@@ -66,10 +66,10 @@ Backend (FastAPI)
 |---|---|
 | Frontend | React 19, TypeScript, Vite |
 | Backend | Python, FastAPI, Uvicorn, Pydantic |
-| Planner LLM | Groq (fast query decomposition) |
-| Synthesis LLM | Anthropic Claude (final grounded answer) |
-| Retrieval | Sentence-transformer embeddings + cosine similarity (GitHub semantic code search) |
-| Auth | OAuth 2.0 (Google, GitHub, Notion) with encrypted per-user token storage |
+| Planner, agents, file selector, and synthesis LLM | Groq `openai/gpt-oss-120b` by default (configurable with `GROQ_MODEL`) |
+| Retrieval | Live GitHub tree inspection, LLM-guided file selection, and direct file-content retrieval; no vector database |
+| Auth | GitHub OAuth login, optional Google/Gmail and Notion connections, encrypted per-user token storage |
+| Guest access | Anonymous public-GitHub-only sessions; guest sessions are not stored in SQLite |
 | Integrations | Gmail API, GitHub API, Notion API, local filesystem (Obsidian) |
 
 ## Setup
@@ -90,8 +90,15 @@ npm install
 ### 2. Environment variables
 Create a `.env` in the backend root:
 ```
-GROQ_API_KEY=
-ANTHROPIC_API_KEY=
+API_KEY=your_groq_api_key
+GROQ_MODEL=openai/gpt-oss-120b
+
+APP_BASE_URL=http://localhost:5173
+APP_ENV=development
+ALLOWED_HOSTS=localhost,127.0.0.1
+SESSION_SECRET=replace_with_a_long_random_value
+TOKEN_ENCRYPTION_KEY=replace_with_a_fernet_key
+DATABASE_PATH=data/live_data_agent.db
 
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
@@ -113,19 +120,19 @@ cd frontend
 npm run dev
 ```
 
-Open the app, sign in, connect the sources you want (GitHub / Gmail / Notion), optionally point it at a local Obsidian vault, and start asking questions.
+Open the app and either sign in with GitHub for personalized connections or continue as a guest to ask questions about public GitHub repositories. Authenticated users can optionally connect Gmail and Notion; Obsidian is configured locally.
 
 ## Example queries
 
 - *"I was absent for 2 days, tell me what happened"* — time-windowed catch-up across all connected sources
-- *"I'm new to this codebase, explain it"* — semantic exploration of repo structure and README, not a time-based search
+- *"I'm new to this codebase, explain it"* — LLM-guided exploration of repo structure and source files, not a time-based search
 - *"What happened in the past 3 hours?"* — precise recent-activity lookup
-- *"How does authentication work in this repo?"* — semantic code retrieval, not keyword search
+- *"How does authentication work in this repo?"* — targeted codebase retrieval based on the repository tree and file contents
 
 ## Evaluation
 
 The system is evaluated across three layers:
 
-- **Retrieval evaluation** — precision@k and chunk relevance for semantic search results
+- **Retrieval evaluation** — whether the selected files and live evidence cover the user’s question
 - **Trajectory evaluation** — did the planner select the correct tool(s) and reasonable arguments for a given question
 - **Model / output evaluation** — faithfulness of the final answer to the retrieved evidence, and hallucination rate
