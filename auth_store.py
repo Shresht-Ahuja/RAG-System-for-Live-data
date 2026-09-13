@@ -35,14 +35,26 @@ def initialize_store() -> None:
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as connection:
         connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        # Upgrade databases created before users.updated_at was introduced.
+        # SQLite cannot add a required column without a default, so the
+        # migration adds it with a temporary default and backfills existing
+        # users from their creation timestamp.
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+        if "updated_at" not in columns:
+            connection.execute(
+                "ALTER TABLE users ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute("UPDATE users SET updated_at=created_at WHERE updated_at=0")
 
 
 def upsert_user(user_id: str, email: str, name: str | None) -> None:
+    now = int(time.time())
     with sqlite3.connect(DATABASE_PATH) as connection:
         connection.execute(
-            """INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name""",
-            (user_id, email, name, int(time.time())),
+            """INSERT INTO users (id, email, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name,
+            updated_at=excluded.updated_at""",
+            (user_id, email, name, now, now),
         )
 
 
