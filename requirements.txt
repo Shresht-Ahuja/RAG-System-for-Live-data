@@ -8,4 +8,5 @@ python-dotenv
 mcp>=1.0.0,<2.0.0
 fastapi
 uvicorn[standard]
+itsdangerous
 cryptography
