@@ -38,16 +38,30 @@ def _json_response(prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_useful_results(results: list[str]) -> bool:
-    if not results:
-        return False
-    text = "\n".join(results).lower()
-    return (
-        "no emails found" not in text
-        and "no notion pages found" not in text
-        and "no obsidian notes found" not in text
-        and "[error]" not in text
-        and "could not fetch" not in text
-    )
+    """Return true when at least one result is real evidence, not an error marker.
+
+    Do not search the entire evidence block for strings such as ``[error]``:
+    source files often contain those strings as part of their implementation.
+    The previous check therefore discarded valid codebase evidence and
+    unnecessarily launched a follow-up activity search.
+    """
+    for result in results:
+        text = str(result).strip().lower()
+        if not text:
+            continue
+        if text.startswith((
+            "[error]",
+            "no emails found",
+            "no notion pages found",
+            "no obsidian notes found",
+            "no readme found in repo",
+            "no commits found in the requested time window",
+        )):
+            continue
+        if text.startswith("===") and "\n[could not fetch:" in text:
+            continue
+        return True
+    return False
 
 
 def _gmail_queries(sub_question: str, initial_query: str) -> list[str]:
@@ -89,6 +103,11 @@ async def run_gmail_agent(sub_question: str, args: dict[str, Any]) -> list[str]:
 
 
 def _github_actions(sub_question: str, args: dict[str, Any]) -> list[str]:
+    # General repository questions must inspect the codebase. Time-windowed
+    # questions can still use the activity search.
+    if args.get("hours_back") is None:
+        return ["codebase"]
+
     fallback = ["activity"] if args.get("hours_back") else ["codebase"]
     decision = _json_response(
         f"""You are a GitHub retrieval agent. Choose one or both actions:

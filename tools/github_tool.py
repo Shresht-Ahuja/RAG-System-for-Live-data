@@ -77,9 +77,14 @@ def _get_repo(repo: str | None) -> str | None:
 
 
 def _get_headers(access_token: str | None = None) -> dict:
-    # ``None`` means use the legacy CLI token fallback. An explicit empty
-    # string is used by guest mode to guarantee an unauthenticated request.
-    token = os.environ.get("GITHUB_TOKEN") if access_token is None else access_token
+    # ``None`` means use the legacy CLI token fallback. Guest mode passes an
+    # explicit empty string so it never uses a signed-in user's token. A
+    # separately named public token can be configured on the server to avoid
+    # GitHub's small unauthenticated API quota for guest traffic.
+    if access_token == "":
+        token = os.environ.get("GITHUB_PUBLIC_TOKEN")
+    else:
+        token = os.environ.get("GITHUB_TOKEN") if access_token is None else access_token
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -114,6 +119,12 @@ async def _fetch_default_branch(repo: str, client: httpx.AsyncClient) -> str | N
     if resp.status_code == 200:
         return resp.json().get("default_branch", "main")
     return None
+
+
+async def _guest_repo_is_private(repo: str, client: httpx.AsyncClient) -> bool:
+    """Check visibility before guest retrieval, even when a server token is configured."""
+    resp = await client.get(f"{GITHUB_API}/repos/{repo}")
+    return resp.status_code == 200 and bool(resp.json().get("private"))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -317,6 +328,9 @@ async def search_github(
         commit_params["since"] = since
 
     async with httpx.AsyncClient(headers=headers, timeout=10) as client:
+        if access_token == "" and await _guest_repo_is_private(repo, client):
+            return ["[error] Guest access only supports public GitHub repositories."]
+
         # Recent commits — no substring filtering on message text, since a
         # natural-language query almost never appears verbatim in a commit
         # message. The final LLM does relevance judgment, not this tool.
@@ -378,6 +392,9 @@ async def explore_codebase(
     summaries = []
 
     async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+        if access_token == "" and await _guest_repo_is_private(repo, client):
+            return ["[error] Guest access only supports public GitHub repositories."]
+
         # Step 1: Fetch the full repo tree
         print(f"      [explore] Fetching repo tree for {repo}...")
         file_paths = await _fetch_repo_tree(repo, client)
